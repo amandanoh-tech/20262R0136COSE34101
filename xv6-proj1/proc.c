@@ -130,6 +130,7 @@ userinit(void)
     panic("userinit: out of memory?");
   inituvm(p->pgdir, _binary_initcode_start, (int)_binary_initcode_size);
   p->sz = PGSIZE;
+  p->priority = 5;
   memset(p->tf, 0, sizeof(*p->tf));
   p->tf->cs = (SEG_UCODE << 3) | DPL_USER;
   p->tf->ds = (SEG_UDATA << 3) | DPL_USER;
@@ -199,6 +200,7 @@ fork(void)
   np->sz = curproc->sz;
   np->parent = curproc;
   *np->tf = *curproc->tf;
+  np->priority = curproc->priority;
 
   // Clear %eax so that fork returns 0 in the child.
   np->tf->eax = 0;
@@ -545,9 +547,17 @@ setnice(int pid, int nice)
     /* ******************** */
     /* * WRITE YOUR CODE    */
     /* ******************** */
-
-    release(&ptable.lock);
-    return -1;
+    
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+         if(p->pid == pid && p->state != UNUSED){
+            p->priority = nice;
+            release(&ptable.lock);
+            return 0;
+        }
+  }
+  release(&ptable.lock);
+  return -1;
+  
 }
 
 int
@@ -559,6 +569,14 @@ getnice(int pid)
     /* ******************** */
     /* * WRITE YOUR CODE    */
     /* ******************** */
+
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+    if(p->pid == pid && p->state != UNUSED){
+            int n = p->priority;
+            release(&ptable.lock);
+            return n;
+        }
+    }
 
     release(&ptable.lock);
     return -1;
@@ -574,6 +592,19 @@ ps(void)
     /* ******************** */
     /* * WRITE YOUR CODE    */
     /* ******************** */
+        static char *states[] = {
+        [SLEEPING] "SLEEPING",
+        [RUNNABLE] "RUNNABLE",
+        [RUNNING]  "RUNNING"
+    };
+
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+        if(p->state == SLEEPING || p->state == RUNNABLE || p->state == RUNNING){
+            int ppid = p->parent ? p->parent->pid : -1;
+            cprintf("%s\t%d\t%d\t%d\t%d\t%s\n",
+                    p->name, p->pid, ppid, p->sz, p->priority, states[p->state]);
+        }
+    }
 
     release(&ptable.lock);
     return;
