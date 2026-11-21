@@ -318,7 +318,6 @@ copyuvm(pde_t *pgdir, uint sz)
   pde_t *d;
   pte_t *pte;
   uint pa, i, flags;
-  char *mem;
 
   if((d = setupkvm()) == 0)
     return 0;
@@ -327,20 +326,20 @@ copyuvm(pde_t *pgdir, uint sz)
       panic("copyuvm: pte should exist");
     if(!(*pte & PTE_P))
       panic("copyuvm: page not present");
+    *pte &= ~PTE_W;
     pa = PTE_ADDR(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto bad;
-    memmove(mem, (char*)P2V(pa), PGSIZE);
-    if(mappages(d, (void*)i, PGSIZE, V2P(mem), flags) < 0) {
-      kfree(mem);
+    if(mappages(d, (void*)i, PGSIZE, pa , flags) < 0) {
       goto bad;
     }
+    inc_refcount(pa);
   }
+  lcr3(V2P(pgdir));
   return d;
 
 bad:
   freevm(d);
+  lcr3(V2P(pgdir));
   return 0;
 }
 
@@ -389,12 +388,46 @@ void
 page_fault(void)
 {
   uint va = rcr2();
-  if(va < 0) {
-    panic("Invalid access");
+  struct proc *p = myproc();
+  pte_t *pte;
+  uint pa, refcount;
+  char *mem;
+
+  if(p == 0){
+    cprintf("page fault with no process, cr2=0x%x\n", va);
+    panic("page_fault");
+  }
+
+  // check that the faulting address is a valid user page
+  if(va >= KERNBASE || (pte = walkpgdir(p->pgdir, (void*)va, 0)) == 0 ||
+     !(*pte & PTE_P) || !(*pte & PTE_U)){
+    cprintf("illegal address 0x%x, kill pid %d\n", va, p->pid);
+    p->killed = 1;
     return;
   }
-  
-  return;
+
+  if(*pte & PTE_W)
+    panic("page_fault: already writable");
+
+  pa = PTE_ADDR(*pte);
+  refcount = get_refcount(pa);
+
+  if(refcount > 1){                 // shared: make a private copy
+    if((mem = kalloc()) == 0){
+      cprintf("page_fault: out of memory, kill pid %d\n", p->pid);
+      p->killed = 1;
+      return;
+    }
+    memmove(mem, (char*)P2V(pa), PGSIZE);
+    *pte = V2P(mem) | PTE_P | PTE_U | PTE_W;
+    dec_refcount(pa);               // this process no longer uses the old page
+  } else if(refcount == 1){         // last user: just make it writable
+    *pte |= PTE_W;
+  } else {
+    panic("page_fault: bad refcount");
+  }
+
+  lcr3(V2P(p->pgdir));              // flush TLB
 }
 
 //PAGEBREAK!

@@ -67,19 +67,31 @@ void
 kfree(char *v)
 {
   struct run *r;
+  uint idx;
 
   if((uint)v % PGSIZE || v < end || V2P(v) >= PHYSTOP)
     panic("kfree");
 
-  // Fill with junk to catch dangling refs.
-  memset(v, 1, PGSIZE);
+  idx = V2P(v) >> PGSHIFT;
 
   if(kmem.use_lock)
     acquire(&kmem.lock);
+
+  if(pmem.refcount[idx] > 0)
+    pmem.refcount[idx]--;
+
+  if(pmem.refcount[idx]> 0){
+    if(kmem.use_lock)
+      release(&kmem.lock);
+    return;
+  }
+
+  // Fill with junk to catch dangling refs.
+  memset(v, 1, PGSIZE);
+
   r = (struct run*)v;
   r->next = kmem.freelist;
   kmem.freelist = r;
-
   pmem.num_free_pages++;
 
   if(kmem.use_lock)
@@ -97,10 +109,11 @@ kalloc(void)
   if(kmem.use_lock)
     acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if(r){
     kmem.freelist = r->next;
-
-  pmem.num_free_pages--;
+    pmem.num_free_pages--;
+    pmem.refcount[V2P((char*)r) >> PGSHIFT] = 1;
+  }
 
   if(kmem.use_lock)
     release(&kmem.lock);
@@ -116,17 +129,36 @@ freemem(void)
 uint
 get_refcount(uint pa)
 {
-  return 0;
+  uint count;
+
+  if(pa < (uint)V2P(end) || pa >= PHYSTOP)
+    panic("getReferenceCount");
+
+  acquire(&kmem.lock);
+  count = pmem.refcount[pa >> PGSHIFT];
+  release(&kmem.lock);
+
+  return count;
 }
 
 void
-inc_refcount(uint pa)
+inc_refcount(uint pa) // increment ref count 
 {
-  return;
+  if( pa < (uint)V2P(end) || pa >= PHYSTOP)
+    panic("incrementReferenceCount");
+
+  acquire(&kmem.lock);
+  ++pmem.refcount[pa >> PGSHIFT];
+  release(&kmem.lock);
 }
 
 void  
-dec_refcount(uint pa)
+dec_refcount(uint pa) // decrement ref count 
 {
-  return;
+  if( pa < (uint)V2P(end) || pa >= PHYSTOP)
+    panic("decrementReferenceCount");
+
+  acquire(&kmem.lock);
+  --pmem.refcount[pa >> PGSHIFT];
+  release(&kmem.lock);
 }
